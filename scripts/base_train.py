@@ -279,7 +279,7 @@ while True:
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         with autocast_ctx:
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
-        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
+        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.14f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
         wandb_run.log({
@@ -297,7 +297,7 @@ while True:
         model.eval()
         with autocast_ctx:
             results = evaluate_model(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
-        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
+        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.14f}")
         wandb_run.log({
             "step": step,
             "total_training_flops": flops_so_far,
@@ -350,6 +350,10 @@ while True:
             },
             rank=ddp_rank,
         )
+        model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
+        md5sum = os.popen(f"md5sum {model_path}").read().split()[0]
+        print0(f"Saved model {model_path} MD5 sum: {md5sum}")
+        
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if last_step:
@@ -403,8 +407,8 @@ while True:
         eta_str = f" | eta: {eta_seconds/60:.1f}m"
     else:
         eta_str = ""
-    print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | total time: {total_training_time/60:.2f}m{eta_str}")
-    if step % 100 == 0:
+    print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.16f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | total time: {total_training_time/60:.2f}m{eta_str}")
+    if step % 1 == 0:
         log_data = {
             "step": step,
             "total_training_flops": flops_so_far,
