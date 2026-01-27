@@ -69,6 +69,16 @@ parser.add_argument("--save_every", type=int, default=-1, help="save checkpoints
 # Output
 parser.add_argument("--model_tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
+### vv MARCIN vv - overrides ###
+# CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.base_train
+args.device_batch_size = 1
+args.total_batch_size = 524288//32
+args.eval_every = -1
+args.core_metric_every = -1
+args.sample_every = -1
+args.save_every = -1
+### ^^ MARCIN ^^ ###
+
 user_config = vars(args).copy()  # for logging
 # -----------------------------------------------------------------------------
 
@@ -77,6 +87,9 @@ device_type = autodetect_device_type() if args.device_type == "" else args.devic
 ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
 master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 autocast_ctx = torch.amp.autocast(device_type=device_type, dtype=torch.bfloat16) if device_type == "cuda" else nullcontext()
+### vv MARCIN vv - disable autocast for now ###
+autocast_ctx = nullcontext()  # disable AMP for now
+### ^^ MARCIN ^^ ###
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
 
@@ -132,6 +145,26 @@ if batch_ratio != 1.0:
 # -----------------------------------------------------------------------------
 # Initialize the Model
 
+### vv MARCIN vv - reproducibility ###
+# Reproducibility
+# Model init relies on identical random seeds, will address later
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+
+################################ EQUIVALENCE ###############################
+# Dissable TORCH.COMPILE for reproducibility non-DDP/DDP
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True)
+
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+torch.backends.cuda.enable_math_sdp(True)
+############################################################################
+### ^^ MARCIN ^^ ###
+
 # Create a new model with random weights
 model_config_kwargs = dict(sequence_len=args.max_seq_len, vocab_size=vocab_size, n_layer=num_layers, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
 with torch.device("meta"):
@@ -153,7 +186,9 @@ if resuming:
     del model_data # free up this memory after the copy
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
-model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+### vv MARCIN vv disable compile for now ###
+#model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+### ^^ MARCIN ^^ ###
 num_params = sum(p.numel() for p in model.parameters())
 num_scaling_params = orig_model.num_scaling_params()
 print0(f"Number of parameters: {num_params:,} (scaling: {num_scaling_params:,})")
@@ -330,21 +365,59 @@ while True:
         )
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
-    if last_step:
+    ### vv MARCIN vv - limit to 2 steps for testing ###
+    if last_step or step >= 2:
         break
+    ### ^^ MARCIN ^^ ###
 
     # -------------------------------------------------------------------------
     # single training step
     # evaluate the gradient
+
+    ### v SAVE v ###
+    save_dict = {
+        'step': step,
+        'x': [],
+        'y': [],
+        'logits': [],
+        'loss_div_accum': [],
+    }
+    save_dict['weights_before'] = []
+    for name, p in model.named_parameters():
+        save_dict['weights_before'].append((name, p.detach().clone().cpu()))
+    save_dict['buffs_before'] = {}
+    for n, p in model.named_buffers():
+        save_dict['buffs_before'][n] = p.detach().clone().cpu()
+    ### ^ SAVE ^ ###
+
     synchronize()
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
-            loss = model(x, y)
+            ### vv MARCIN vv - return logits from model ###
+            logits, loss = model(x, y)
+            ### ^^ MARCIN ^^ ###
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
+        ### v SAVE v ###
+        save_dict['x'].append(x.detach().clone().cpu())
+        save_dict['y'].append(y.detach().clone().cpu())    
+        save_dict['logits'].append(logits.detach()[:,::4,::64].clone().cpu())
+        save_dict['loss_div_accum'].append(loss.item())
+        ### ^ SAVE ^ ###
         loss.backward()
         x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
+
+    ### v SAVE v ###
+    save_dict['gradients'] = []
+    for i, p in enumerate(model.parameters()):
+        if p.grad is not None:
+            # Round gradients elementwise to e-6 to match reference implementation
+            save_dict['gradients'].append(p.grad.detach().clone().cpu())
+        else:
+            save_dict['gradients'].append(None)
+    ### ^ SAVE ^ ###
+
     # step the optimizers
     lrm = get_lr_multiplier(step)
     for opt in optimizers:
@@ -353,8 +426,25 @@ while True:
     muon_momentum = get_muon_momentum(step)
     for group in muon_optimizer.param_groups:
         group["momentum"] = muon_momentum
+    ### v SAVE v ###
+    save_dict['lrm'] = lrm
+    save_dict['muon_momentum'] = muon_momentum
+    save_dict['optimizer_states_before'] = [opt.state_dict() for opt in optimizers]
+    ### ^ SAVE ^ ###
     for opt in optimizers:
         opt.step()
+
+    ### v SAVE v ###
+    save_dict['optimizer_states_after'] = [opt.state_dict() for opt in optimizers]
+    save_dict['weights_after'] = []
+    for name, p in model.named_parameters():
+        save_dict['weights_after'].append((name, p.detach().clone().cpu()))
+
+    # save the save_dict for this step (for debugging)
+    filename = os.path.join(base_dir, f"nanochat_step_{step:05d}_rank_{ddp_rank}.pt")
+    torch.save(save_dict, filename)
+    ### ^ SAVE ^ ###
+
     model.zero_grad(set_to_none=True)
     synchronize()
     t1 = time.time()

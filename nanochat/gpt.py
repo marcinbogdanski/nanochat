@@ -192,8 +192,10 @@ class GPT(nn.Module):
         self.cos, self.sin = cos, sin
 
         # Cast token embeddings to bf16: optimizer can tolerate it and it saves memory
-        if self.transformer.wte.weight.device.type == "cuda":
-            self.transformer.wte.to(dtype=torch.bfloat16)
+        ### vv MARCIN vv disable bf16 for testing equivalence ###
+        # if self.transformer.wte.weight.device.type == "cuda":
+        #     self.transformer.wte.to(dtype=torch.bfloat16)
+        ### ^^ MARCIN ^^ ###
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         # TODO: bump base theta more? e.g. 100K is more common more recently
@@ -208,7 +210,9 @@ class GPT(nn.Module):
         # calculate the rotation frequencies at each (time, channel) pair
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.bfloat16(), sin.bfloat16() # keep them in bfloat16
+        ### vv MARCIN vv disable bfloat16 for testing equivalence ###
+        # cos, sin = cos.bfloat16(), sin.bfloat16() # keep them in bfloat16
+        ### ^^ MARCIN ^^ ###
         cos, sin = cos[None, :, None, :], sin[None, :, None, :] # add batch and head dims for later broadcasting
         return cos, sin
 
@@ -280,7 +284,9 @@ class GPT(nn.Module):
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim/2))
         assert T <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"
         assert idx.device == self.cos.device, f"Rotary embeddings and idx are on different devices: {idx.device} != {self.cos.device}"
-        assert self.cos.dtype == torch.bfloat16, "Rotary embeddings must be in bfloat16"
+        ### vv MARCIN vv disable bfloat16 for testing equivalence ###
+        # assert self.cos.dtype == torch.bfloat16, "Rotary embeddings must be in bfloat16"
+        ### ^^ MARCIN ^^ ###
         # if kv cache exists, we need to offset the rotary embeddings to the current position in the cache
         T0 = 0 if kv_cache is None else kv_cache.get_pos()
         cos_sin = self.cos[:, T0:T0+T], self.sin[:, T0:T0+T] # truncate cache to current sequence length
@@ -303,10 +309,14 @@ class GPT(nn.Module):
             # training: given the targets, compute and return the loss
             # TODO experiment with chunked cross-entropy?
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1, reduction=loss_reduction)
-            return loss
+            ### vv MARCIN vv ###
+            return logits, loss
+            ### ^^ MARCIN ^^ ###
         else:
             # inference: just return the logits directly
-            return logits
+            ### vv MARCIN vv ###
+            return logits, loss
+            ### ^^ MARCIN ^^ ###
 
     @torch.inference_mode()
     def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
