@@ -71,8 +71,17 @@ parser.add_argument("--model_tag", type=str, default=None, help="override model 
 args = parser.parse_args()
 ### vv MARCIN vv - overrides ###
 # CUBLAS_WORKSPACE_CONFIG=:4096:8 python -m scripts.base_train
+args.depth = 10
+args.max_seq_len = 1024
+args.num_iterations = 10
+
 args.device_batch_size = 1
-args.total_batch_size = 524288//32
+args.total_batch_size = 524288//128
+
+args.warmup_ratio = 0.4
+args.warmdown_ratio = 0.4
+args.final_lr_frac = 0.1
+
 args.eval_every = -1
 args.core_metric_every = -1
 args.sample_every = -1
@@ -258,7 +267,7 @@ def get_lr_multiplier(it):
 
 # Momentum scheduler for Muon optimizer
 def get_muon_momentum(it):
-    frac = min(it / 300, 1)
+    frac = min(it / 5, 1)     # 300               ### MARCIN - changed from 300 to 5 for testing
     momentum = (1 - frac) * 0.85 + frac * 0.95
     return momentum
 
@@ -366,7 +375,7 @@ while True:
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     ### vv MARCIN vv - limit to 2 steps for testing ###
-    if last_step or step >= 2:
+    if last_step or step >= 11:
         break
     ### ^^ MARCIN ^^ ###
 
