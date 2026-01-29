@@ -6,9 +6,7 @@ import torch
 from torch import Tensor
 import torch.distributed as dist
 
-### vv MARCIN vv disable compile for testing equivalence ###
-#@torch.compile
-### ^^ MARCIN ^^ ###
+@torch.compile
 def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
     """
     Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
@@ -26,24 +24,12 @@ def zeropower_via_newtonschulz5(G: Tensor, steps: int) -> Tensor:
         X = X.mT
 
     # Ensure spectral norm is at most 1
-    ### vv MARCIN vv slightly different formulation for testing equivalence ###
-    # X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
-    ### -- MARCIN -- ###
-    X = X / X.norm(dim=(-2, -1), keepdim=True).clamp(min=1e-7)
-    ### ^^ MARCIN ^^ ###
-
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
     # Perform the NS iterations
-    ### vv MARCIN vv slightly different formulation for testing equivalence ###
-    # for _ in range(steps):
-    #     A = X @ X.mT
-    #     B = b * A + c * A @ A # quintic computation strategy adapted from suggestion by @jxbz, @leloykun, and @YouJiacheng
-    #     X = a * X + B @ X
-    ### -- MARCIN -- ###
     for _ in range(steps):
         A = X @ X.mT
-        B = torch.addmm(A, A, A, beta=b, alpha=c)
-        X = torch.addmm(X, B, X, beta=a)
-    ### ^^ MARCIN ^^ ###
+        B = b * A + c * A @ A # quintic computation strategy adapted from suggestion by @jxbz, @leloykun, and @YouJiacheng
+        X = a * X + B @ X
 
     if G.size(-2) > G.size(-1):
         X = X.mT
