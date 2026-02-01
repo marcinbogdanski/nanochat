@@ -6,54 +6,6 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
-### vv MARCIN vv Non-distributed version for testing equivalence ###
-class AdamW(torch.optim.Optimizer):
-    """
-    Single-process AdamW optimizer (DistAdamW without DDP collectives).
-    """
-    def __init__(self, param_groups, lr: float = 1e-3, betas: tuple[float, float] = (0.9, 0.999), eps: float = 1e-8, weight_decay: float = 0.01):
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
-        super().__init__(param_groups, defaults)
-
-    #@torch.compile
-    @torch.no_grad()
-    def step(self):
-        for group in self.param_groups:
-            beta1, beta2 = group['betas']
-            eps = group['eps']
-            wd = group['weight_decay']
-            params = group['params']
-            for base in range(len(params)):
-                p = params[base]
-                lr = group['lr'] * getattr(p, "lr_mul", 1.0)
-                state = self.state[p]
-                g_slice = p.grad
-                # State init
-                if not state:
-                    state['step'] = torch.tensor(0, dtype=torch.int64, device=p.device)
-                    state['exp_avg'] = torch.zeros_like(p)
-                    state['exp_avg_sq'] = torch.zeros_like(p)
-                exp_avg = state['exp_avg']
-                exp_avg_sq = state['exp_avg_sq']
-                state['step'] += 1
-                t = state['step']
-                # weight decay
-                if wd != 0:
-                    eff_weight_decay = lr * wd * getattr(p, "wd_mul", 1.0)
-                    p.mul_(1 - eff_weight_decay)
-                # update running averages
-                exp_avg.mul_(beta1).add_(g_slice, alpha=1 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(g_slice, g_slice, value=1 - beta2)
-                # bias corrections
-                bias1 = 1 - beta1 ** t
-                bias2 = 1 - beta2 ** t
-                # compute step
-                denom = (exp_avg_sq / bias2).sqrt().add_(eps)
-                step_size = lr / bias1
-                update = exp_avg.div(denom).mul_(step_size)
-                p.add_(other=update, alpha=-1.0)
-### ^^ MARCIN ^^ ###
-
 
 class DistAdamW(torch.optim.Optimizer):
     """
