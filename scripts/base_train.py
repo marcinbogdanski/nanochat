@@ -358,23 +358,6 @@ while True:
     # -------------------------------------------------------------------------
     # single training step
     # evaluate the gradient
-
-    ### v SAVE v ###
-    save_dict = {
-        'step': step,
-        'x': [],
-        'y': [],
-        'logits': [],
-        'loss_div_accum': [],
-    }
-    save_dict['weights_before'] = []
-    for name, p in model.named_parameters():
-        save_dict['weights_before'].append((name, p.detach().clone().cpu()))
-    save_dict['buffs_before'] = {}
-    for n, p in model.named_buffers():
-        save_dict['buffs_before'][n] = p.detach().clone().cpu()
-    ### ^ SAVE ^ ###
-
     synchronize()
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
@@ -382,25 +365,8 @@ while True:
             loss = model(x, y)
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
-        ### v SAVE v ###
-        save_dict['x'].append(x.detach().clone().cpu())
-        save_dict['y'].append(y.detach().clone().cpu())    
-        # save_dict['logits'].append(logits.detach()[:,::4,::64].clone().cpu())
-        save_dict['loss_div_accum'].append(loss.item())
-        ### ^ SAVE ^ ###
         loss.backward()
         x, y, dataloader_state_dict = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
-
-    ### v SAVE v ###
-    save_dict['gradients'] = []
-    for i, p in enumerate(model.parameters()):
-        if p.grad is not None:
-            # Round gradients elementwise to e-6 to match reference implementation
-            save_dict['gradients'].append(p.grad.detach().clone().cpu())
-        else:
-            save_dict['gradients'].append(None)
-    ### ^ SAVE ^ ###
-
     # step the optimizers
     lrm = get_lr_multiplier(step)
     for opt in optimizers:
@@ -409,25 +375,8 @@ while True:
     muon_momentum = get_muon_momentum(step)
     for group in muon_optimizer.param_groups:
         group["momentum"] = muon_momentum
-    ### v SAVE v ###
-    save_dict['lrm'] = lrm
-    save_dict['muon_momentum'] = muon_momentum
-    save_dict['optimizer_states_before'] = [opt.state_dict() for opt in optimizers]
-    ### ^ SAVE ^ ###
     for opt in optimizers:
         opt.step()
-
-    ### v SAVE v ###
-    save_dict['optimizer_states_after'] = [opt.state_dict() for opt in optimizers]
-    save_dict['weights_after'] = []
-    for name, p in model.named_parameters():
-        save_dict['weights_after'].append((name, p.detach().clone().cpu()))
-
-    # save the save_dict for this step (for debugging)
-    filename = os.path.join(base_dir, f"nanochat_step_{step:05d}_rank_{ddp_rank}.pt")
-    torch.save(save_dict, filename)
-    ### ^ SAVE ^ ###
-
     model.zero_grad(set_to_none=True)
     synchronize()
     t1 = time.time()
