@@ -146,9 +146,9 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 torch.use_deterministic_algorithms(True)
 
-torch.backends.cuda.enable_flash_sdp(False)
-torch.backends.cuda.enable_mem_efficient_sdp(False)
-torch.backends.cuda.enable_math_sdp(True)
+# torch.backends.cuda.enable_flash_sdp(False)
+# torch.backends.cuda.enable_mem_efficient_sdp(False)
+# torch.backends.cuda.enable_math_sdp(True)
 ############################################################################
 ### ^^ MARCIN ^^ ###
 
@@ -352,10 +352,8 @@ while True:
         )
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
-    ### vv MARCIN vv - limit to 2 steps for testing ###
-    if last_step or step >= 11:
+    if last_step:
         break
-    ### ^^ MARCIN ^^ ###
 
     # -------------------------------------------------------------------------
     # single training step
@@ -381,9 +379,7 @@ while True:
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
-            ### vv MARCIN vv - return logits from model ###
-            logits, loss = model(x, y)
-            ### ^^ MARCIN ^^ ###
+            loss = model(x, y)
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         ### v SAVE v ###
