@@ -143,6 +143,7 @@ def build_model_meta(depth):
     return model_meta
 
 # Build the model, move to device, init the weights
+torch.use_deterministic_algorithms(True)            # <- Oooo!
 model = build_model_meta(args.depth) # 1) Build on meta device (only shapes/dtypes, no data)
 model_config = model.config
 model_config_kwargs = asdict(model_config)
@@ -411,7 +412,7 @@ grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
 print0(f"Tokens / micro-batch / rank: {args.device_batch_size} x {args.max_seq_len} = {tokens_per_fwdbwd:,}")
 print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
 print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
-
+print0(f"model.smear_lambda = {model.smear_lambda.item():.4f} | model.backout_lambda = {model.backout_lambda.item():.4f}")    # <--- print
 # Go!
 while True:
     last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
