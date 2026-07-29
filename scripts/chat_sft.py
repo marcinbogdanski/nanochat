@@ -25,6 +25,11 @@ from nanochat.flash_attention import HAS_FA3
 from nanochat.engine import Engine
 from scripts.chat_eval import run_chat_eval
 
+# vv MARCIN vv override FA3 with SDPA, FA3 community-kernel is non-deterministic
+import nanochat.flash_attention as fa
+fa.USE_FA3 = False
+# ^^ MARCIN ^^
+
 from tasks.common import TaskMixture
 from tasks.gsm8k import GSM8K
 from tasks.mmlu import MMLU
@@ -93,6 +98,26 @@ if not HAS_FA3:
 # Load the model and tokenizer
 model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
 
+### vv MARCIN vv - reproducibility ###
+# Reproducibility
+# Model init relies on identical random seeds, will address later
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+
+################################ EQUIVALENCE ###############################
+# Disable TORCH.COMPILE for reproducibility non-DDP/DDP
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True)
+
+# torch.backends.cuda.enable_flash_sdp(False)
+# torch.backends.cuda.enable_mem_efficient_sdp(False)
+# torch.backends.cuda.enable_math_sdp(True)
+############################################################################
+### ^^ MARCIN ^^ ###
+
 # Inherit training hyperparameters from pretrained checkpoint (None = inherit, explicit value = override)
 pretrain_user_config = meta.get("user_config", {})
 for name, fallback, source in [
@@ -115,7 +140,9 @@ for name, fallback, source in [
         print0(f"Using {name}={arg_val}")
 
 orig_model = model
-model = torch.compile(model, dynamic=False)
+### vv MARCIN vv - disable compile for now ###
+# model = torch.compile(model, dynamic=False)
+### ^^ MARCIN ^^ ###
 depth = model.config.n_layer
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
@@ -342,7 +369,7 @@ while True:
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
-        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
+        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.14f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
         wandb_run.log({
@@ -413,6 +440,10 @@ while True:
             },
             rank=ddp_rank,
         )
+        if master_process:
+            model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
+            md5sum = os.popen(f"md5sum {model_path}").read().split()[0]
+            print0(f"Saved model {model_path} MD5 sum: {md5sum}")
 
     if last_step:
         break
