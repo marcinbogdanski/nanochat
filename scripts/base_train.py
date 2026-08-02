@@ -36,6 +36,11 @@ from nanochat.flash_attention import HAS_FA3
 from scripts.base_eval import evaluate_core
 print_banner()
 
+# vv MARCIN vv override FA3 with SDPA, FA3 community-kernel is non-deterministic
+import nanochat.flash_attention as fa
+fa.USE_FA3 = False
+# ^^ MARCIN ^^
+
 # -----------------------------------------------------------------------------
 # CLI arguments
 parser = argparse.ArgumentParser(description="Pretrain base model")
@@ -123,6 +128,26 @@ token_bytes = get_token_bytes(device=device)
 vocab_size = tokenizer.get_vocab_size()
 print0(f"Vocab size: {vocab_size:,}")
 
+### vv MARCIN vv - reproducibility ###
+# Reproducibility
+# Model init relies on identical random seeds, will address later
+torch.manual_seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+
+################################ EQUIVALENCE ###############################
+# Dissable TORCH.COMPILE for reproducibility non-DDP/DDP
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True)
+
+# torch.backends.cuda.enable_flash_sdp(False)
+# torch.backends.cuda.enable_mem_efficient_sdp(False)
+# torch.backends.cuda.enable_math_sdp(True)
+############################################################################
+### ^^ MARCIN ^^ ###
+
 # -----------------------------------------------------------------------------
 # Initialize the Model
 
@@ -149,6 +174,7 @@ model_config_kwargs = asdict(model_config)
 print0(f"Model config:\n{json.dumps(model_config_kwargs, indent=2)}")
 model.to_empty(device=device) # 2) All tensors get storage on target device but with uninitialized (garbage) data
 model.init_weights() # 3) All tensors get initialized
+
 
 # If we are resuming, overwrite the model parameters with those of the checkpoint
 base_dir = get_base_dir()
@@ -243,7 +269,10 @@ def disable_fp8(model):
 # Compile the model
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
-model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+### vv MARCIN vv disable compile for now ###
+# model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+### ^^ MARCIN ^^ ###
+
 
 # -----------------------------------------------------------------------------
 # Scaling laws and muP extrapolations to determine the optimal training horizon, batch size, learning rates, weight decay.
@@ -424,7 +453,7 @@ while True:
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         with disable_fp8(model):
             val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
-        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.6f}")
+        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.14f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
         wandb_run.log({
@@ -443,7 +472,7 @@ while True:
         model.eval()
         with disable_fp8(orig_model):
             results = evaluate_core(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
-        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
+        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.14f}")
         wandb_run.log({
             "step": step,
             "total_training_flops": flops_so_far,
@@ -497,6 +526,11 @@ while True:
             },
             rank=ddp_rank,
         )
+        if master_process:
+            model_path = os.path.join(checkpoint_dir, f"model_{step:06d}.pt")
+            md5sum = os.popen(f"md5sum {model_path}").read().split()[0]
+            print0(f"Saved model {model_path} MD5 sum: {md5sum}")
+        
 
     # termination conditions (TODO: possibly also add loss explosions etc.)
     if last_step:
@@ -564,8 +598,8 @@ while True:
     else:
         eta_str = ""
     epoch = f"{dataloader_state_dict['epoch']} pq: {dataloader_state_dict['pq_idx']} rg: {dataloader_state_dict['rg_idx']}"
-    print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | bf16_mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
-    if step % 100 == 0:
+    print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.16f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | bf16_mfu: {mfu:.2f} | epoch: {epoch} | total time: {total_training_time/60:.2f}m{eta_str}")
+    if step % 1 == 0:
         log_data = {
             "step": step,
             "total_training_flops": flops_so_far,
