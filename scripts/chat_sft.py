@@ -296,7 +296,10 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         if split == "train":
             current_epoch = epoch
             if args.num_iterations > 0:
-                approx_progress = it / args.num_iterations
+                ## vv MARCIN vv - minimal shim to fix progress accounting for LR scaling - see #816
+                # approx_progress = it / args.num_iterations
+                approx_progress = (it - 2) / (args.num_iterations - 1)
+                ## ^^ MARCIN ^^
             else:
                 approx_progress = consumed / dataset_size
             # Trigger last_step when we've consumed enough (instead of when cursor wraps)
