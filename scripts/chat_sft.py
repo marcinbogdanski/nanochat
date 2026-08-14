@@ -232,7 +232,11 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         nonlocal cursor, epoch
         while len(conv_buffer) < buffer_size:
             conversation = dataset[cursor]
-            ids, mask = tokenizer.render_conversation(conversation)
+            # vv MARCIN vv - properly cut to 2049 including last target token
+            # ids, mask = tokenizer.render_conversation(conversation)
+            # -- MARCIN --
+            ids, mask = tokenizer.render_conversation(conversation, max_tokens=row_capacity)
+            # ^^ MARCIN ^^
             conv_buffer.append((ids, mask))
             cursor += ddp_world_size
             if cursor >= dataset_size:
@@ -267,8 +271,15 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
                 if best_idx >= 0:
                     # Found a conversation that fits - use it entirely
                     conv, conv_mask = conv_buffer.pop(best_idx)
-                    row.extend(conv)
-                    mask_row.extend(conv_mask)
+                    ## vv MARCIN vv - skip fully masked conversations, but still advance consumed
+                    # row.extend(conv)
+                    # mask_row.extend(conv_mask)
+                    ## -- MARCIN --
+                    if not all(x == 0 for x in conv_mask):
+                        # Fully masked conversation have no training value, skip but still advance consumed
+                        row.extend(conv)
+                        mask_row.extend(conv_mask)
+                    ## ^^ MARCIN ^^
                     consumed += ddp_world_size  # Track actual consumption
                 else:
                     # No conversation fits - pad the remainder instead of cropping
